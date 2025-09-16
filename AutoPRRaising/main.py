@@ -53,16 +53,62 @@ class GitHubPRAutomator:
         """Get the current git branch"""
         return self.run_git_command(["git", "branch", "--show-current"])
 
+    def has_staged_changes(self) -> bool:
+        """Check if there are staged changes"""
+        try:
+            output = self.run_git_command(["git", "diff", "--staged", "--name-only"])
+            return bool(output.strip())
+        except:
+            return False
+
+    def has_unstaged_changes(self) -> bool:
+        """Check if there are unstaged changes"""
+        try:
+            output = self.run_git_command(["git", "diff", "--name-only"])
+            return bool(output.strip())
+        except:
+            return False
+
+    def stage_all_changes(self) -> bool:
+        """Stage all unstaged changes"""
+        try:
+            self.run_git_command(["git", "add", "."])
+            return True
+        except:
+            return False
+
+    def commit_staged_changes(self, message: str) -> bool:
+        """Commit staged changes"""
+        try:
+            self.run_git_command(["git", "commit", "-m", message])
+            return True
+        except:
+            return False
+
     def get_changed_files(self) -> List[str]:
         """Get list of changed files"""
-        # Get files that are different from main
+        # First try to get staged files
+        try:
+            output = self.run_git_command(["git", "diff", "--staged", "--name-only"])
+            if output:
+                return output.split('\n')
+        except:
+            pass
+        
+        # Then try unstaged files
+        try:
+            output = self.run_git_command(["git", "diff", "--name-only"])
+            if output:
+                return output.split('\n')
+        except:
+            pass
+        
+        # Finally try files different from main
         try:
             output = self.run_git_command(["git", "diff", "--name-only", "origin/main"])
             return output.split('\n') if output else []
         except:
-            # If comparison with origin/main fails, get staged files
-            output = self.run_git_command(["git", "diff", "--staged", "--name-only"])
-            return output.split('\n') if output else []
+            return []
 
     def get_commit_messages(self, base_branch: str = "main") -> List[str]:
         """Get commit messages since base branch"""
@@ -224,6 +270,21 @@ class GitHubPRAutomator:
         current_branch = self.get_current_branch()
         print(f"📍 Current branch: {current_branch}")
         
+        # Check for unstaged changes and stage them
+        if self.has_unstaged_changes():
+            print("📝 Found unstaged changes, staging them...")
+            if not self.stage_all_changes():
+                print("❌ Failed to stage changes")
+                return
+        
+        # Get changed files before any commits
+        changed_files = self.get_changed_files()
+        if not changed_files or (len(changed_files) == 1 and not changed_files[0]):
+            print("⚠️ No changes detected to create PR")
+            return
+        
+        print(f"📁 Found {len(changed_files)} changed files")
+        
         # If on main, create a new branch
         if current_branch == "main":
             if not feature_name:
@@ -239,15 +300,17 @@ class GitHubPRAutomator:
             
             current_branch = branch_name
         
-        # Get changed files
-        changed_files = self.get_changed_files()
-        if not changed_files or (len(changed_files) == 1 and not changed_files[0]):
-            print("⚠️ No changes detected to create PR")
-            return
+        # Commit staged changes if any
+        if self.has_staged_changes():
+            # Generate commit message based on changes
+            commit_message = self.generate_pr_title(changed_files, [])
+            print(f"💾 Committing changes: {commit_message}")
+            
+            if not self.commit_staged_changes(commit_message):
+                print("❌ Failed to commit changes")
+                return
         
-        print(f"📁 Found {len(changed_files)} changed files")
-        
-        # Get commit messages
+        # Get commit messages after committing
         commit_messages = self.get_commit_messages()
         
         # Generate PR content
@@ -256,12 +319,11 @@ class GitHubPRAutomator:
         
         print(f"📝 PR Title: {title}")
         
-        # Push branch if needed
-        if current_branch != "main":
-            print(f"⬆️ Pushing branch {current_branch}...")
-            if not self.push_branch(current_branch):
-                print("❌ Failed to push branch")
-                return
+        # Push branch
+        print(f"⬆️ Pushing branch {current_branch}...")
+        if not self.push_branch(current_branch):
+            print("❌ Failed to push branch")
+            return
         
         # Create PR
         print("🔄 Creating Pull Request...")
