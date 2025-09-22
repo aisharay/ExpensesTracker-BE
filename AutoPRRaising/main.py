@@ -53,16 +53,62 @@ class GitHubPRAutomator:
         """Get the current git branch"""
         return self.run_git_command(["git", "branch", "--show-current"])
 
+    def has_staged_changes(self) -> bool:
+        """Check if there are staged changes"""
+        try:
+            output = self.run_git_command(["git", "diff", "--staged", "--name-only"])
+            return bool(output.strip())
+        except:
+            return False
+
+    def has_unstaged_changes(self) -> bool:
+        """Check if there are unstaged changes"""
+        try:
+            output = self.run_git_command(["git", "diff", "--name-only"])
+            return bool(output.strip())
+        except:
+            return False
+
+    def stage_all_changes(self) -> bool:
+        """Stage all unstaged changes"""
+        try:
+            self.run_git_command(["git", "add", "."])
+            return True
+        except:
+            return False
+
+    def commit_staged_changes(self, message: str) -> bool:
+        """Commit staged changes"""
+        try:
+            self.run_git_command(["git", "commit", "-m", message])
+            return True
+        except:
+            return False
+
     def get_changed_files(self) -> List[str]:
         """Get list of changed files"""
-        # Get files that are different from main
+        # First try to get staged files
+        try:
+            output = self.run_git_command(["git", "diff", "--staged", "--name-only"])
+            if output:
+                return output.split('\n')
+        except:
+            pass
+        
+        # Then try unstaged files
+        try:
+            output = self.run_git_command(["git", "diff", "--name-only"])
+            if output:
+                return output.split('\n')
+        except:
+            pass
+        
+        # Finally try files different from main
         try:
             output = self.run_git_command(["git", "diff", "--name-only", "origin/main"])
             return output.split('\n') if output else []
         except:
-            # If comparison with origin/main fails, get staged files
-            output = self.run_git_command(["git", "diff", "--staged", "--name-only"])
-            return output.split('\n') if output else []
+            return []
 
     def get_commit_messages(self, base_branch: str = "main") -> List[str]:
         """Get commit messages since base branch"""
@@ -188,6 +234,50 @@ class GitHubPRAutomator:
         
         return description
 
+    def check_existing_pr(self, branch_name: str) -> Optional[Dict]:
+        """Check if a PR already exists for the given branch"""
+        url = f"{self.base_url}/repos/{self.owner}/{self.repo}/pulls"
+        params = {
+            "head": f"{self.owner}:{branch_name}",
+            "state": "open"
+        }
+        
+        try:
+            response = requests.get(url, headers=self.headers, params=params)
+            if response.status_code == 200:
+                prs = response.json()
+                return prs[0] if prs else None
+            return None
+        except Exception as e:
+            print(f"⚠️ Error checking existing PR: {str(e)}")
+            return None
+
+    def update_pull_request(self, pr_number: int, title: str, description: str) -> Optional[Dict]:
+        """Update an existing pull request"""
+        url = f"{self.base_url}/repos/{self.owner}/{self.repo}/pulls/{pr_number}"
+        
+        data = {
+            "title": title,
+            "body": description
+        }
+        
+        try:
+            response = requests.patch(url, headers=self.headers, data=json.dumps(data))
+            if response.status_code == 200:
+                return response.json()
+            else:
+                print(f"❌ Failed to update PR: {response.status_code}")
+                print(f"Response: {response.text}")
+                return None
+        except Exception as e:
+            print(f"❌ Error updating PR: {str(e)}")
+            return None
+
+    def create_new_branch_with_suffix(self, base_name: str) -> str:
+        """Create a new branch name with timestamp suffix"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"feature/{base_name}-{timestamp}"
+
     def create_pull_request(self, 
                           title: str, 
                           description: str, 
@@ -200,7 +290,8 @@ class GitHubPRAutomator:
             "title": title,
             "body": description,
             "head": head_branch,
-            "base": base_branch
+            "base": base_branch,
+            "draft": True
         }
         
         try:
@@ -217,29 +308,21 @@ class GitHubPRAutomator:
             print(f"❌ Error creating PR: {str(e)}")
             return None
 
-    def auto_create_pr(self, feature_name: str = None, custom_title: str = None, custom_description: str = None):
+    def auto_create_pr(self, feature_name: str = None, custom_title: str = None, custom_description: str = None, force_new_branch: bool = False):
         """Main method to automatically create a PR"""
         print("🚀 Starting Auto PR Creation Process...")
         
         current_branch = self.get_current_branch()
         print(f"📍 Current branch: {current_branch}")
         
-        # If on main, create a new branch
-        if current_branch == "main":
-            if not feature_name:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                feature_name = f"auto-pr-{timestamp}"
-            
-            branch_name = f"feature/{feature_name}"
-            print(f"🌿 Creating new branch: {branch_name}")
-            
-            if not self.create_branch(branch_name):
-                print("❌ Failed to create branch")
+        # Check for unstaged changes and stage them
+        if self.has_unstaged_changes():
+            print("📝 Found unstaged changes, staging them...")
+            if not self.stage_all_changes():
+                print("❌ Failed to stage changes")
                 return
-            
-            current_branch = branch_name
         
-        # Get changed files
+        # Get changed files before any commits
         changed_files = self.get_changed_files()
         if not changed_files or (len(changed_files) == 1 and not changed_files[0]):
             print("⚠️ No changes detected to create PR")
@@ -247,7 +330,41 @@ class GitHubPRAutomator:
         
         print(f"📁 Found {len(changed_files)} changed files")
         
-        # Get commit messages
+        # If on main OR force_new_branch is True, create a new branch
+        if current_branch == "main" or force_new_branch:
+            if not feature_name:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                feature_name = f"auto-pr-{timestamp}"
+            
+            if force_new_branch and current_branch != "main":
+                # Extract base name from current branch for new branch
+                if current_branch.startswith("feature/"):
+                    base_name = current_branch.replace("feature/", "").split("-")[0]
+                else:
+                    base_name = "update"
+                branch_name = self.create_new_branch_with_suffix(base_name)
+                print(f"🌿 Creating new branch (forced): {branch_name}")
+            else:
+                branch_name = f"feature/{feature_name}"
+                print(f"🌿 Creating new branch: {branch_name}")
+            
+            if not self.create_branch(branch_name):
+                print("❌ Failed to create branch")
+                return
+            
+            current_branch = branch_name
+        
+        # Commit staged changes if any
+        if self.has_staged_changes():
+            # Generate commit message based on changes
+            commit_message = self.generate_pr_title(changed_files, [])
+            print(f"💾 Committing changes: {commit_message}")
+            
+            if not self.commit_staged_changes(commit_message):
+                print("❌ Failed to commit changes")
+                return
+        
+        # Get commit messages after committing
         commit_messages = self.get_commit_messages()
         
         # Generate PR content
@@ -256,23 +373,39 @@ class GitHubPRAutomator:
         
         print(f"📝 PR Title: {title}")
         
-        # Push branch if needed
-        if current_branch != "main":
-            print(f"⬆️ Pushing branch {current_branch}...")
-            if not self.push_branch(current_branch):
-                print("❌ Failed to push branch")
-                return
+        # Push branch
+        print(f"⬆️ Pushing branch {current_branch}...")
+        if not self.push_branch(current_branch):
+            print("❌ Failed to push branch")
+            return
         
-        # Create PR
-        print("🔄 Creating Pull Request...")
-        pr_data = self.create_pull_request(title, description, current_branch)
+        # Check if PR already exists for this branch
+        existing_pr = self.check_existing_pr(current_branch)
         
-        if pr_data:
-            print("✅ Pull Request created successfully!")
-            print(f"🔗 PR URL: {pr_data['html_url']}")
-            print(f"📊 PR Number: #{pr_data['number']}")
+        if existing_pr:
+            print(f"🔄 Found existing PR #{existing_pr['number']} for branch {current_branch}")
+            print("📝 Updating existing Pull Request...")
+            
+            # Update the existing PR
+            updated_pr = self.update_pull_request(existing_pr['number'], title, description)
+            
+            if updated_pr:
+                print("✅ Pull Request updated successfully!")
+                print(f"🔗 PR URL: {updated_pr['html_url']}")
+                print(f"� PR Number: #{updated_pr['number']}")
+            else:
+                print("❌ Failed to update Pull Request")
         else:
-            print("❌ Failed to create Pull Request")
+            # Create new PR
+            print("�🔄 Creating Pull Request...")
+            pr_data = self.create_pull_request(title, description, current_branch)
+            
+            if pr_data:
+                print("✅ Pull Request created successfully!")
+                print(f"🔗 PR URL: {pr_data['html_url']}")
+                print(f"📊 PR Number: #{pr_data['number']}")
+            else:
+                print("❌ Failed to create Pull Request")
 
 def main():
     parser = argparse.ArgumentParser(description="Automatically create GitHub Pull Requests")
@@ -282,6 +415,7 @@ def main():
     parser.add_argument("--feature", help="Feature name for branch creation")
     parser.add_argument("--title", help="Custom PR title")
     parser.add_argument("--description", help="Custom PR description")
+    parser.add_argument("--new-branch", action="store_true", help="Force create a new branch even if not on main")
     
     args = parser.parse_args()
     
@@ -301,7 +435,7 @@ def main():
     automator = GitHubPRAutomator(args.owner, args.repo, token)
     
     # Create PR
-    automator.auto_create_pr(args.feature, args.title, args.description)
+    automator.auto_create_pr(args.feature, args.title, args.description, args.new_branch)
 
 if __name__ == "__main__":
     main()
