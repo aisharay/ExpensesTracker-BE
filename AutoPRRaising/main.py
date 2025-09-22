@@ -246,7 +246,8 @@ class GitHubPRAutomator:
             "title": title,
             "body": description,
             "head": head_branch,
-            "base": base_branch
+            "base": base_branch,
+            "draft": True
         }
         
         try:

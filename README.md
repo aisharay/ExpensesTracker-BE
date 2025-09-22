@@ -1,3 +1,7 @@
+#Auto PR raising:
+python AutoPRRaising/main.py --token "Your PAT token"
+
+
 # Expense Tracker Backend API 💰
 
 A comprehensive RESTful API for managing personal expenses, income, and financial goals built with Node.js, Express, and MongoDB.
