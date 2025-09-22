@@ -308,7 +308,7 @@ class GitHubPRAutomator:
             print(f"❌ Error creating PR: {str(e)}")
             return None
 
-    def auto_create_pr(self, feature_name: str = None, custom_title: str = None, custom_description: str = None):
+    def auto_create_pr(self, feature_name: str = None, custom_title: str = None, custom_description: str = None, force_new_branch: bool = False):
         """Main method to automatically create a PR"""
         print("🚀 Starting Auto PR Creation Process...")
         
@@ -330,14 +330,23 @@ class GitHubPRAutomator:
         
         print(f"📁 Found {len(changed_files)} changed files")
         
-        # If on main, create a new branch
-        if current_branch == "main":
+        # If on main OR force_new_branch is True, create a new branch
+        if current_branch == "main" or force_new_branch:
             if not feature_name:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 feature_name = f"auto-pr-{timestamp}"
             
-            branch_name = f"feature/{feature_name}"
-            print(f"🌿 Creating new branch: {branch_name}")
+            if force_new_branch and current_branch != "main":
+                # Extract base name from current branch for new branch
+                if current_branch.startswith("feature/"):
+                    base_name = current_branch.replace("feature/", "").split("-")[0]
+                else:
+                    base_name = "update"
+                branch_name = self.create_new_branch_with_suffix(base_name)
+                print(f"🌿 Creating new branch (forced): {branch_name}")
+            else:
+                branch_name = f"feature/{feature_name}"
+                print(f"🌿 Creating new branch: {branch_name}")
             
             if not self.create_branch(branch_name):
                 print("❌ Failed to create branch")
@@ -426,7 +435,7 @@ def main():
     automator = GitHubPRAutomator(args.owner, args.repo, token)
     
     # Create PR
-    automator.auto_create_pr(args.feature, args.title, args.description)
+    automator.auto_create_pr(args.feature, args.title, args.description, args.new_branch)
 
 if __name__ == "__main__":
     main()
