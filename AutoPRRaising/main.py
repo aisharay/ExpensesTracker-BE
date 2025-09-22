@@ -234,6 +234,50 @@ class GitHubPRAutomator:
         
         return description
 
+    def check_existing_pr(self, branch_name: str) -> Optional[Dict]:
+        """Check if a PR already exists for the given branch"""
+        url = f"{self.base_url}/repos/{self.owner}/{self.repo}/pulls"
+        params = {
+            "head": f"{self.owner}:{branch_name}",
+            "state": "open"
+        }
+        
+        try:
+            response = requests.get(url, headers=self.headers, params=params)
+            if response.status_code == 200:
+                prs = response.json()
+                return prs[0] if prs else None
+            return None
+        except Exception as e:
+            print(f"⚠️ Error checking existing PR: {str(e)}")
+            return None
+
+    def update_pull_request(self, pr_number: int, title: str, description: str) -> Optional[Dict]:
+        """Update an existing pull request"""
+        url = f"{self.base_url}/repos/{self.owner}/{self.repo}/pulls/{pr_number}"
+        
+        data = {
+            "title": title,
+            "body": description
+        }
+        
+        try:
+            response = requests.patch(url, headers=self.headers, data=json.dumps(data))
+            if response.status_code == 200:
+                return response.json()
+            else:
+                print(f"❌ Failed to update PR: {response.status_code}")
+                print(f"Response: {response.text}")
+                return None
+        except Exception as e:
+            print(f"❌ Error updating PR: {str(e)}")
+            return None
+
+    def create_new_branch_with_suffix(self, base_name: str) -> str:
+        """Create a new branch name with timestamp suffix"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"feature/{base_name}-{timestamp}"
+
     def create_pull_request(self, 
                           title: str, 
                           description: str, 
@@ -326,16 +370,33 @@ class GitHubPRAutomator:
             print("❌ Failed to push branch")
             return
         
-        # Create PR
-        print("🔄 Creating Pull Request...")
-        pr_data = self.create_pull_request(title, description, current_branch)
+        # Check if PR already exists for this branch
+        existing_pr = self.check_existing_pr(current_branch)
         
-        if pr_data:
-            print("✅ Pull Request created successfully!")
-            print(f"🔗 PR URL: {pr_data['html_url']}")
-            print(f"📊 PR Number: #{pr_data['number']}")
+        if existing_pr:
+            print(f"🔄 Found existing PR #{existing_pr['number']} for branch {current_branch}")
+            print("📝 Updating existing Pull Request...")
+            
+            # Update the existing PR
+            updated_pr = self.update_pull_request(existing_pr['number'], title, description)
+            
+            if updated_pr:
+                print("✅ Pull Request updated successfully!")
+                print(f"🔗 PR URL: {updated_pr['html_url']}")
+                print(f"� PR Number: #{updated_pr['number']}")
+            else:
+                print("❌ Failed to update Pull Request")
         else:
-            print("❌ Failed to create Pull Request")
+            # Create new PR
+            print("�🔄 Creating Pull Request...")
+            pr_data = self.create_pull_request(title, description, current_branch)
+            
+            if pr_data:
+                print("✅ Pull Request created successfully!")
+                print(f"🔗 PR URL: {pr_data['html_url']}")
+                print(f"📊 PR Number: #{pr_data['number']}")
+            else:
+                print("❌ Failed to create Pull Request")
 
 def main():
     parser = argparse.ArgumentParser(description="Automatically create GitHub Pull Requests")
@@ -345,6 +406,7 @@ def main():
     parser.add_argument("--feature", help="Feature name for branch creation")
     parser.add_argument("--title", help="Custom PR title")
     parser.add_argument("--description", help="Custom PR description")
+    parser.add_argument("--new-branch", action="store_true", help="Force create a new branch even if not on main")
     
     args = parser.parse_args()
     
